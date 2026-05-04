@@ -1182,7 +1182,10 @@ func (t *Terminal) readLine() (line string, err error) {
 				t.historyIndex = -1
 				line2 := strings.TrimSpace(line)
 				if line2 != "" {
-					t.history.Add(line2)
+					previous, ok := t.history.NthPreviousEntry(0)
+					if !ok || previous != line2 {
+						t.history.Add(line2)
+					}
 				}
 			}
 			if lineIsPasted {

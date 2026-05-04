@@ -201,7 +201,7 @@ func Tun(newChannel ssh.NewChannel, l logger.Logger) {
 		return
 	}
 
-	err = icmpResponder(ns)
+	err = icmpResponder(ns, NICID)
 	if err != nil {
 		l.Error("Unable to create icmp responder: %v", err)
 		return
@@ -321,12 +321,13 @@ func forwardTCP(tunstats *stat) func(request *tcp.ForwarderRequest) {
 		if errTcp != nil {
 			// ErrConnectionRefused is a transient error
 			if _, ok := errTcp.(*tcpip.ErrConnectionRefused); !ok {
-				log.Printf("could not create endpoint: %s", errTcp)
+				log.Printf("could not create endpoint %q: %s", fwdDst.String(), errTcp)
 			}
 			tunstats.tcp.failures.Add(1)
 
 			return
 		}
+		defer ep.Close()
 
 		tunstats.tcp.active.Add(1)
 		defer tunstats.tcp.active.Add(-1)
@@ -617,7 +618,7 @@ func (*SSHEndpoint) WriteRawPacket(*stack.PacketBuffer) tcpip.Error {
 	return &tcpip.ErrNotSupported{}
 }
 
-func icmpResponder(s *stack.Stack) error {
+func icmpResponder(s *stack.Stack, nicID tcpip.NICID) error {
 
 	var wq waiter.Queue
 	rawProto, rawerr := raw.NewEndpoint(s, ipv4.ProtocolNumber, icmp.ProtocolNumber4, &wq)
@@ -630,46 +631,53 @@ func icmpResponder(s *stack.Stack) error {
 	go func() {
 		we, ch := waiter.NewChannelEntry(waiter.ReadableEvents)
 		wq.EventRegister(&we)
+		buff := bytes.NewBuffer(make([]byte, 1024))
+
+		defer wq.EventUnregister(&we)
+
 		for {
-			var buff bytes.Buffer
-			_, err := rawProto.Read(&buff, tcpip.ReadOptions{})
+			buff.Reset()
+
+			_, err := rawProto.Read(buff, tcpip.ReadOptions{})
 			if _, ok := err.(*tcpip.ErrWouldBlock); ok {
 				// Wait for data to become available.
-
-				for range ch {
-
-					_, err := rawProto.Read(&buff, tcpip.ReadOptions{})
-
-					if err != nil {
-
-						continue
-					}
-
-					iph := header.IPv4(buff.Bytes())
-
-					hlen := int(iph.HeaderLength())
-					if buff.Len() < hlen {
-						return
-					}
-
-					// Reconstruct a ICMP PacketBuffer from bytes.
-					view := buffer.MakeWithData(buff.Bytes())
-					packetbuff := stack.NewPacketBuffer(stack.PacketBufferOptions{
-						Payload:            view,
-						ReserveHeaderBytes: hlen,
-					})
-
-					packetbuff.NetworkProtocolNumber = ipv4.ProtocolNumber
-					packetbuff.TransportProtocolNumber = icmp.ProtocolNumber4
-					packetbuff.NetworkHeader().Consume(hlen)
-
-					go func() {
-						if TryResolve(iph.DestinationAddress().String()) {
-							ProcessICMP(s, packetbuff)
-						}
-					}()
-				}
+				<-ch
+				continue
 			}
+
+			if err != nil {
+				log.Println("failed to handle icmp, reading failed: ", err)
+				return
+			}
+
+			iph := header.IPv4(buff.Bytes())
+
+			hlen := int(iph.HeaderLength())
+			if buff.Len() < hlen {
+				continue
+			}
+
+			// Reconstruct a ICMP PacketBuffer from bytes.
+			view := buffer.MakeWithData(buff.Bytes())
+			packetbuff := stack.NewPacketBuffer(stack.PacketBufferOptions{
+				Payload:            view,
+				ReserveHeaderBytes: hlen,
+			})
+
+			packetbuff.NetworkProtocolNumber = ipv4.ProtocolNumber
+			packetbuff.TransportProtocolNumber = icmp.ProtocolNumber4
+			packetbuff.NetworkHeader().Consume(hlen)
+
+			// Consume the transport header so ProcessICMP can read it via TransportHeader().Slice()
+			if !parse.ICMPv4(packetbuff) {
+				continue
+			}
+
+			go func() {
+				if TryResolve(iph.DestinationAddress().String()) {
+					ProcessICMP(s, packetbuff, nicID)
+				}
+			}()
 
 		}
 	}()
@@ -678,7 +686,7 @@ func icmpResponder(s *stack.Stack) error {
 
 // ProcessICMP send back a ICMP echo reply from after receiving a echo request.
 // This code come mostly from pkg/tcpip/network/ipv4/icmp.go
-func ProcessICMP(nstack *stack.Stack, pkt *stack.PacketBuffer) {
+func ProcessICMP(nstack *stack.Stack, pkt *stack.PacketBuffer, nicID tcpip.NICID) {
 	// (gvisor) pkg/tcpip/network/ipv4/icmp.go:174 - handleICMP
 	defer pkt.DecRef()
 
@@ -717,7 +725,7 @@ func ProcessICMP(nstack *stack.Stack, pkt *stack.PacketBuffer) {
 			localAddr = tcpip.Address{}
 		}
 
-		r, err := nstack.FindRoute(1, localAddr, ipHdr.SourceAddress(), ipv4.ProtocolNumber, false /* multicastLoop */)
+		r, err := nstack.FindRoute(nicID, localAddr, ipHdr.SourceAddress(), ipv4.ProtocolNumber, false /* multicastLoop */)
 		if err != nil {
 			// If we cannot find a route to the destination, silently drop the packet.
 			return
@@ -749,15 +757,6 @@ func ProcessICMP(nstack *stack.Stack, pkt *stack.PacketBuffer) {
 			Payload:            replyBuf,
 		})
 		defer replyPkt.DecRef()
-
-		// Populate the network/transport headers in the packet buffer so the
-		// ICMP packet goes through IPTables.
-		if ok := parse.IPv4(replyPkt); !ok {
-			panic("expected to parse IPv4 header we just created")
-		}
-		if ok := parse.ICMPv4(replyPkt); !ok {
-			panic("expected to parse ICMPv4 header we just created")
-		}
 
 		replyPkt.TransportProtocolNumber = header.ICMPv4ProtocolNumber
 		if err := r.WriteHeaderIncludedPacket(replyPkt); err != nil {
