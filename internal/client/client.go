@@ -307,6 +307,7 @@ type Settings struct {
 	SNI         string
 
 	ProxyUseHostKerberos bool
+	ProxyAutoDetect      bool
 
 	VersionString string
 
@@ -342,6 +343,25 @@ func Run(settings *Settings) {
 	}
 
 	l := logger.NewLog("client")
+
+	var autoDetectedProxy string
+	if settings.ProxyAutoDetect {
+		detected, derr := DetectSystemProxy()
+		switch {
+		case derr != nil:
+			log.Printf("auto-proxy: detection failed: %v", derr)
+		case detected == "":
+			log.Println("auto-proxy: no system proxy configured")
+		default:
+			autoDetectedProxy = detected
+			if settings.ProxyAddr == "" {
+				log.Printf("auto-proxy: using detected proxy %s", detected)
+				settings.ProxyAddr = detected
+			} else {
+				log.Printf("auto-proxy: detected %s; --proxy %s takes precedence, detected will be used as fallback", detected, settings.ProxyAddr)
+			}
+		}
+	}
 
 	var err error
 	settings.ProxyAddr, err = GetProxyDetails(settings.ProxyAddr)
@@ -393,6 +413,11 @@ func Run(settings *Settings) {
 
 	// fetch the environment variables, but the first proxy is done from the supplied proxyAddr arg
 	potentialProxies := getCaseInsensitiveEnv("http_proxy", "https_proxy")
+	// auto-detected proxy is preferred over env vars in the fallback chain;
+	// skip if it's already the primary (i.e. --proxy was not set explicitly)
+	if autoDetectedProxy != "" && autoDetectedProxy != settings.ProxyAddr {
+		potentialProxies = append([]string{autoDetectedProxy}, potentialProxies...)
+	}
 	triedProxyIndex := 0
 	initialProxyAddr := settings.ProxyAddr
 	for {
