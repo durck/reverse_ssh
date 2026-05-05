@@ -207,6 +207,7 @@ catcher$ link -h
 link [OPTIONS]
 Link will compile a client and serve the resulting binary on a link which is returned.
 This requires the web server component has been enabled.
+        --auto-proxy    Instruct client to auto-detect proxy from system settings (Windows: HKCU WinINET)
         --fingerprint   Set RSSH server fingerprint will default to server public key
         --garble        Use garble to obfuscate the binary (requires garble to be installed)
         --goarch        Set the target build architecture (default runtime GOARCH)
