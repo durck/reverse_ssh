@@ -222,6 +222,7 @@ This requires the web server component has been enabled.
         --ntlm-proxy-creds      Set NTLM proxy credentials in format DOMAIN\\USER:PASS
         --owners        Set owners of client, if unset client is public all users. E.g --owners jsmith,ldavidson
         --proxy Set connect proxy address to bake it
+        --push-path     Set HTTP(S) polling base path to bake into the client
         --raw-download  Download over raw TCP, outputs bash downloader rather than http
         --shared-object Generate shared object file
         --use-host-header       Use HTTP Host header as callback address when generating download template (add .sh to your download urls and find out)
@@ -232,6 +233,7 @@ This requires the web server component has been enabled.
         --use-kerberos  Instruct client to try and use kerberos ticket when using a proxy
         --working-directory     Set download/working directory for automatic script (i.e doing curl https://<url>.sh)
         --ws    Use plain http websockets as the underlying transport
+        --ws-path       Set WebSocket transport path to bake into the client
         --wss   Use TLS websockets as the underlying transport
         -C      Comment to add as the public key (acts as the name)
         -l      List currently active download links
@@ -276,6 +278,22 @@ Or by baking it in with the `link` command.
 ```sh
 ssh your.rssh.server -p 3232 link --ws --name test
 ```
+
+WebSocket and HTTP(S) polling transports default to `/ws` and `/push`. When
+the server is behind an HTTP reverse proxy you can set explicit paths on both
+sides:
+
+```sh
+reverse_ssh --ws-path /socket --push-path /api/push :3232
+./client -d wss://your.rssh.server:443 --ws-path /socket
+./client -d https://your.rssh.server:443 --push-path /api/push
+catcher$ link --wss --ws-path /socket --push-path /api/push --name test
+```
+
+If TLS terminates at a trusted proxy, use `--trusted-proxy-cidr` on the server
+to accept `X-Forwarded-For` or `X-Real-IP` only from that proxy range. Webhook
+events then report the real client in `IP`, the proxy/VPN peer in
+`ProxySourceIP`, and include `Transport` plus `PublicKeyFingerprint`.
 
 ### Bash autocomplete
 

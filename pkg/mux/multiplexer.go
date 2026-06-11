@@ -15,6 +15,7 @@ import (
 	"math/big"
 	"net"
 	"net/http"
+	"net/url"
 	"sort"
 	"strings"
 	"sync"
@@ -22,6 +23,7 @@ import (
 	"time"
 
 	"github.com/NHAS/reverse_ssh/pkg/mux/protocols"
+	"github.com/NHAS/reverse_ssh/pkg/transport"
 	"golang.org/x/net/websocket"
 )
 
@@ -38,6 +40,9 @@ type MultiplexerConfig struct {
 	TcpKeepAlive int
 
 	PollingAuthChecker func(key string, addr net.Addr) bool
+	WSPath             string
+	PushPath           string
+	TrustedProxyCIDRs  []*net.IPNet
 
 	tlsConfig *tls.Config
 }
@@ -191,6 +196,10 @@ func (m *Multiplexer) collector(localAddr net.Addr) http.HandlerFunc {
 			http.Error(w, "Bad Request", http.StatusBadRequest)
 			return
 		}
+		if !m.isPollingRequest(req.Method, req.URL.Path) {
+			http.Error(w, "Bad Request", http.StatusBadRequest)
+			return
+		}
 
 		lck.Lock()
 
@@ -227,7 +236,17 @@ func (m *Multiplexer) collector(localAddr net.Addr) http.HandlerFunc {
 					return
 				}
 
-				c, id, err = NewFragmentCollector(localAddr, realConn.RemoteAddr(), func() {
+				transportName := Metadata(realConn).Transport
+				if transportName == "" {
+					transportName = "http"
+				}
+				metadata := m.metadataFromRequest(req, realConn.RemoteAddr(), transportName)
+				remoteAddr := realConn.RemoteAddr()
+				if metadata.RealClientIP != "" {
+					remoteAddr = tcpAddrForIP(metadata.RealClientIP)
+				}
+
+				c, id, err = NewFragmentCollector(localAddr, remoteAddr, metadata, func() {
 					cleanupConnection(id, nil)
 				})
 				if err != nil {
@@ -338,6 +357,9 @@ func (m *Multiplexer) QueueConn(c net.Conn) error {
 func ListenWithConfig(network, address string, _c MultiplexerConfig) (*Multiplexer, error) {
 
 	var m Multiplexer
+
+	_c.WSPath = transport.NormalizePath(_c.WSPath, transport.DefaultWSPath)
+	_c.PushPath = transport.NormalizePath(_c.PushPath, transport.DefaultPushPath)
 
 	m.newConnections = make(chan net.Conn)
 	m.listeners = make(map[string]net.Listener)
@@ -456,7 +478,7 @@ func isHttp(b []byte) bool {
 
 func (m *Multiplexer) determineProtocol(conn net.Conn) (net.Conn, protocols.Type, error) {
 
-	header := make([]byte, 14)
+	header := make([]byte, 4096)
 	n, err := conn.Read(header)
 	if err != nil {
 		conn.Close()
@@ -479,11 +501,11 @@ func (m *Multiplexer) determineProtocol(conn net.Conn) (net.Conn, protocols.Type
 
 	if isHttp(header) {
 
-		if bytes.HasPrefix(header, []byte("GET /ws")) {
+		if classifyHTTPRequest(header[:n], m.config.WSPath, m.config.PushPath) == protocols.Websockets {
 			return c, protocols.Websockets, nil
 		}
 
-		if bytes.HasPrefix(header, []byte("HEAD /push")) || bytes.HasPrefix(header, []byte("GET /push")) || bytes.HasPrefix(header, []byte("POST /push")) {
+		if classifyHTTPRequest(header[:n], m.config.WSPath, m.config.PushPath) == protocols.HTTP {
 			return c, protocols.HTTP, nil
 		}
 
@@ -492,6 +514,55 @@ func (m *Multiplexer) determineProtocol(conn net.Conn) (net.Conn, protocols.Type
 
 	conn.Close()
 	return nil, "", errors.New("unknown protocol: " + string(header[:n]))
+}
+
+func classifyHTTPRequest(header []byte, wsPath, pushPath string) protocols.Type {
+	method, requestPath, ok := parseHTTPRequestLine(header)
+	if !ok {
+		return protocols.Invalid
+	}
+	wsPath = transport.NormalizePath(wsPath, transport.DefaultWSPath)
+	pushPath = transport.NormalizePath(pushPath, transport.DefaultPushPath)
+	switch {
+	case method == http.MethodGet && requestPath == wsPath:
+		return protocols.Websockets
+	case isPollingRequest(method, requestPath, pushPath):
+		return protocols.HTTP
+	default:
+		return protocols.HTTPDownload
+	}
+}
+
+func parseHTTPRequestLine(header []byte) (method string, requestPath string, ok bool) {
+	line := string(header)
+	if idx := strings.Index(line, "\r\n"); idx >= 0 {
+		line = line[:idx]
+	}
+	fields := strings.Fields(line)
+	if len(fields) < 2 {
+		return "", "", false
+	}
+	parsed, err := url.ParseRequestURI(fields[1])
+	if err != nil {
+		return "", "", false
+	}
+	return fields[0], transport.NormalizePath(parsed.Path, "/"), true
+}
+
+func isPollingRequest(method, requestPath, pushPath string) bool {
+	pushPath = transport.NormalizePath(pushPath, transport.DefaultPushPath)
+	switch method {
+	case http.MethodHead, http.MethodPost:
+		return requestPath == pushPath
+	case http.MethodGet:
+		return strings.HasPrefix(requestPath, pushPath+"/")
+	default:
+		return false
+	}
+}
+
+func (m *Multiplexer) isPollingRequest(method, requestPath string) bool {
+	return isPollingRequest(method, transport.NormalizePath(requestPath, "/"), m.config.PushPath)
 }
 
 func (m *Multiplexer) getProtoListener(proto protocols.Type) net.Listener {
@@ -515,7 +586,9 @@ func (m *Multiplexer) unwrapTransports(conn net.Conn) (net.Conn, protocols.Type,
 	conn.SetDeadline(time.Time{})
 
 	// Unwrap any outer tls if required
+	tlsWrapped := false
 	if m.config.TLS && proto == "tls" {
+		tlsWrapped = true
 
 		if m.config.tlsConfig == nil {
 
@@ -564,33 +637,64 @@ func (m *Multiplexer) unwrapTransports(conn net.Conn) (net.Conn, protocols.Type,
 
 	switch proto {
 	case protocols.Websockets:
-		return m.unwrapWebsockets(conn)
+		return m.unwrapWebsockets(conn, protocolTransportName(proto, tlsWrapped))
 	case protocols.HTTP:
 		// This will get passed off to a golang stdlib http server to do further unwrapping/feeding to the ssh component.
 		// Unlike the other connections this isnt a single stream, its multiple connections composed into one blob, so it has to be a lil non-standard
-		return conn, protocols.HTTP, nil
+		return withMetadata(conn, ConnectionMetadata{Transport: protocolTransportName(proto, tlsWrapped)}), protocols.HTTP, nil
 	default:
 		// If the initial unwrapping was enough and left us with download or ssh, we can just quit
 		if protocols.FullyUnwrapped(proto) {
-			return conn, proto, nil
+			return withMetadata(conn, ConnectionMetadata{Transport: protocolTransportName(proto, tlsWrapped)}), proto, nil
 		}
 	}
 
 	return nil, protocols.Invalid, fmt.Errorf("after unwrapping transports, nothing useable was found: %s", proto)
 }
 
-func (m *Multiplexer) unwrapWebsockets(conn net.Conn) (net.Conn, protocols.Type, error) {
+func protocolTransportName(proto protocols.Type, tlsWrapped bool) string {
+	switch proto {
+	case protocols.Websockets:
+		if tlsWrapped {
+			return "wss"
+		}
+		return "ws"
+	case protocols.HTTP:
+		if tlsWrapped {
+			return "https"
+		}
+		return "http"
+	case protocols.C2:
+		if tlsWrapped {
+			return "tls"
+		}
+		return "tcp"
+	default:
+		return string(proto)
+	}
+}
+
+func (m *Multiplexer) unwrapWebsockets(conn net.Conn, transportName string) (net.Conn, protocols.Type, error) {
 	wsHttp := http.NewServeMux()
 	wsConnChan := make(chan net.Conn, 1)
+	var request *http.Request
 
 	wsServer := websocket.Server{
 		Config: websocket.Config{},
 
 		// Disable origin validation because.... its ssh we dont need it
-		Handshake: nil,
+		Handshake: func(_ *websocket.Config, req *http.Request) error {
+			request = req
+			return nil
+		},
 		Handler: func(c *websocket.Conn) {
 			// Pain and suffering https://github.com/golang/go/issues/7350
 			c.PayloadType = websocket.BinaryFrame
+
+			metadata := ConnectionMetadata{Transport: transportName}
+			if request != nil {
+				metadata = m.metadataFromRequest(request, conn.RemoteAddr(), transportName)
+			}
 
 			wsW := websocketWrapper{
 				wsConn:  c,
@@ -598,13 +702,13 @@ func (m *Multiplexer) unwrapWebsockets(conn net.Conn) (net.Conn, protocols.Type,
 				done:    make(chan interface{}),
 			}
 
-			wsConnChan <- &wsW
+			wsConnChan <- withMetadata(&wsW, metadata)
 
 			<-wsW.done
 		},
 	}
 
-	wsHttp.Handle("/ws", wsServer)
+	wsHttp.Handle(transport.NormalizePath(m.config.WSPath, transport.DefaultWSPath), wsServer)
 
 	go http.Serve(&singleConnListener{conn: conn}, wsHttp)
 

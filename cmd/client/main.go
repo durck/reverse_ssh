@@ -44,6 +44,8 @@ var (
 	proxy       string
 	ignoreInput string
 	customSNI   string
+	wsPath      string
+	pushPath    string
 	// golang can only embed strings using the compile time linker
 	useHostKerberos string
 	autoProxy       string
@@ -66,6 +68,8 @@ func printHelp() {
 	fmt.Println("\t\t--ntlm-proxy-creds\tNTLM proxy credentials in format DOMAIN\\USER:PASS")
 	fmt.Println("\t\t--process_name\tProcess name shown in tasklist/process list")
 	fmt.Println("\t\t--sni\tWhen using TLS set the clients requested SNI to this value")
+	fmt.Println("\t\t--ws-path\tWebSocket transport path, defaults to /ws")
+	fmt.Println("\t\t--push-path\tHTTP(S) polling transport base path, defaults to /push")
 	fmt.Println("\t\t--log-level\tChange logging output levels, [INFO,WARNING,ERROR,FATAL,DISABLED]")
 	fmt.Println("\t\t--version-string\tSSH version string to use, i.e SSH-VERSION, defaults to internal.Version-runtime.GOOS_runtime.GOARCH")
 	fmt.Println("\t\t--private-key-path\tOptional path to unencrypted SSH key to use for connecting")
@@ -85,6 +89,8 @@ func makeInitialSettings() (*client.Settings, error) {
 		ProxyUseHostKerberos: useHostKerberos == "true",
 		ProxyAutoDetect:      autoProxy == "true",
 		SNI:                  customSNI,
+		WSPath:               wsPath,
+		PushPath:             pushPath,
 		VersionString:        versionString,
 	}
 
@@ -180,6 +186,16 @@ func main() {
 	userSpecifiedSNI, err := line.GetArgString("sni")
 	if err == nil {
 		settings.SNI = userSpecifiedSNI
+	}
+
+	userSpecifiedWSPath, err := line.GetArgString("ws-path")
+	if err == nil {
+		settings.WSPath = userSpecifiedWSPath
+	}
+
+	userSpecifiedPushPath, err := line.GetArgString("push-path")
+	if err == nil {
+		settings.PushPath = userSpecifiedPushPath
 	}
 
 	timeoutInt := 180
