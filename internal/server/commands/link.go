@@ -4,7 +4,6 @@ import (
 	"errors"
 	"fmt"
 	"io"
-	"path"
 	"regexp"
 	"sort"
 	"strings"
@@ -86,7 +85,7 @@ func (l *link) Run(user *users.User, tty io.ReadWriter, line terminal.ParsedLine
 		for _, id := range ids {
 			file := files[id]
 
-			t.AddValues("http://"+path.Join(webserver.DefaultConnectBack, id), file.CallbackAddress, file.LogLevel, file.Goos, file.Goarch+file.Goarm, file.Version, file.FileType, fmt.Sprintf("%d", file.Hits), fmt.Sprintf("%.2f MB", file.FileSize))
+			t.AddValues(webserver.DownloadURL(id), file.CallbackAddress, file.LogLevel, file.Goos, file.Goarch+file.Goarm, file.Version, file.FileType, fmt.Sprintf("%d", file.Hits), fmt.Sprintf("%.2f MB", file.FileSize))
 		}
 
 		t.Fprint(tty)

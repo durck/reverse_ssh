@@ -97,6 +97,9 @@ services:
       - EXTERNAL_ADDRESS=<your.rssh.server.internal>:3232
       - RSSH_CONSOLE_LABEL=c2.label
       - RSSH_LOG_LEVEL=INFO # DISABLED, INFO, WARNING, ERROR, FATAL
+      - RSSH_WS_PATH=/ws
+      - RSSH_PUSH_PATH=/push
+      - RSSH_TRUSTED_PROXY_CIDR=
       - SEED_AUTHORIZED_KEYS=${SSH_PUBLIC_KEY}
     volumes:
       - ./data:/data
@@ -289,6 +292,14 @@ reverse_ssh --ws-path /socket --push-path /api/push :3232
 ./client -d https://your.rssh.server:443 --push-path /api/push
 catcher$ link --wss --ws-path /socket --push-path /api/push --name test
 ```
+
+The Docker entrypoint accepts the same listener options through
+`RSSH_WS_PATH`, `RSSH_PUSH_PATH`, and `RSSH_TRUSTED_PROXY_CIDR`.
+
+The `link` command prints a download URL for the generated binary. The
+`Client Callback` value shown by `link -l` is the transport baked into that
+binary. When the server listener runs with `--tls`, download URLs use
+`https://`; WSS clients still show `wss://` in `Client Callback`.
 
 If TLS terminates at a trusted proxy, use `--trusted-proxy-cidr` on the server
 to accept `X-Forwarded-For` or `X-Real-IP` only from that proxy range. Webhook
