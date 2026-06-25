@@ -4,7 +4,47 @@ import (
 	"net"
 	"net/http"
 	"strings"
+	"time"
 )
+
+type timedConn struct {
+	net.Conn
+	acceptedAt time.Time
+}
+
+func withAcceptTime(conn net.Conn) net.Conn {
+	if conn == nil {
+		return nil
+	}
+	if _, ok := conn.(*timedConn); ok {
+		return conn
+	}
+	return &timedConn{Conn: conn, acceptedAt: time.Now()}
+}
+
+func (c *timedConn) AcceptedAt() time.Time {
+	return c.acceptedAt
+}
+
+func AcceptedAt(conn net.Conn) (time.Time, bool) {
+	type acceptTime interface {
+		AcceptedAt() time.Time
+	}
+	for conn != nil {
+		if c, ok := conn.(acceptTime); ok {
+			return c.AcceptedAt(), true
+		}
+		switch c := conn.(type) {
+		case *metadataConn:
+			conn = c.Conn
+		case *bufferedConn:
+			conn = c.conn
+		default:
+			return time.Time{}, false
+		}
+	}
+	return time.Time{}, false
+}
 
 type ConnectionMetadata struct {
 	Transport     string
