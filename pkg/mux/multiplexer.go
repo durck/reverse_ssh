@@ -137,7 +137,7 @@ func (m *Multiplexer) StartListener(network, address string) error {
 			}
 			go func() {
 				select {
-				case m.newConnections <- conn:
+				case m.newConnections <- withAcceptTime(conn):
 				case <-time.After(2 * time.Second):
 					log.Println("Accepting new connection timed out")
 					conn.Close()
@@ -415,6 +415,12 @@ func ListenWithConfig(network, address string, _c MultiplexerConfig) (*Multiplex
 					newConnection.Close()
 					log.Println("Multiplexing failed (final determination): ", proto)
 					return
+				}
+
+				if proto == protocols.HTTPDownload {
+					if acceptedAt, ok := AcceptedAt(newConnection); ok {
+						log.Printf("download mux routed remote=%s since_tcp_accept=%s", newConnection.RemoteAddr(), time.Since(acceptedAt))
+					}
 				}
 
 				select {
