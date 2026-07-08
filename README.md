@@ -224,6 +224,7 @@ This requires the web server component has been enabled.
         --proxy Set connect proxy address to bake it
         --raw-download  Download over raw TCP, outputs bash downloader rather than http
         --shared-object Generate shared object file
+        --use-host-header       Use HTTP Host header as callback address when generating download template (add .sh to your download urls and find out)
         --sni   When TLS is in use, set a custom SNI for the client to connect with
         --stdio Use stdin and stdout as transport, will disable logging, destination after stdio:// is ignored
         --tls   Use TLS as the underlying transport
@@ -494,6 +495,10 @@ You can also generate clients with `link --fingerprint <fingerprint here>` to sp
 ## Foreground vs Background
 
 By default, clients will run in the background then the parent process will exit, the child process will be given the parent processes stdout/stderr so you will be able to see output. If you need to debug your client, use the `--foreground` flag.
+
+## Auto-Proxy Detection (Windows)
+
+Standalone clients support `--auto-proxy` to auto-detect proxy settings from the Windows registry (HKCU WinINET `ProxyServer`). This can also be baked in at build time via `link --auto-proxy`. When enabled, the detected proxy is used as a fallback if `--proxy` is not set. Only manual proxy settings are supported (no PAC/WPAD).
 
 # Donations, Support, or Giving Back
 
