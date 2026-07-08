@@ -1,6 +1,7 @@
 build.sh
 .DS_Store
 .vscode/*
+.claude/
 bin/*
 internal/client/keys/*
 cmd/server/id_ed25519
